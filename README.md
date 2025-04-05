@@ -68,7 +68,6 @@ K.i.t.t. is for you. It prioritizes ease of use and minimal dependencies.
 *   **Connection Errors:**
     *   Ensure the Ollama application is running. Check your system's taskbar/menu bar or use `ollama list` in the terminal.
     *   If you manually started Ollama with `ollama serve`, check the terminal output for errors.
-    *   Verify K.i.t.t. is trying to connect to the correct Ollama API endpoint (usually `http://localhost:11434` by default).
 *   **No Model Found:** Make sure a modal has been downloaded via Ollama (`ollama pull <model_name>`). or added (`ollama create <model_name>`)
 *   **Slow Responses / Document Issues:** This might be related to the model's `num_ctx` size or the size/complexity of the document provided. Ensure the model's context window is appropriate for your needs.
 *   **Web UI Issues:** Check the browser's developer console (usually F12) for JavaScript errors. Check the Flask application's terminal output for server-side errors.
