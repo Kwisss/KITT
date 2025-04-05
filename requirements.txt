@@ -1,0 +1,8 @@
+# Web Framework
+Flask
+
+# HTTP Requests Library
+requests
+
+# WSGI Utility Library (used by Flask, but explicitly imported for secure_filename)
+Werkzeug
