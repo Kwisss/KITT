@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ollama Chat Interface</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Sofia+Sans+Extra+Condensed&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <div class="main-content">
+            <div class="sidebar">
+                <div class="model-selector">
+                    <h3>Select Model</h3>
+                    <select id="model-dropdown">
+                        <option value="loading">Loading models...</option>
+                    </select>
+                </div>
+                <div class="file-upload">
+                    <h3>Upload Files</h3>
+                    <!-- Hidden file input, accessible via JS -->
+                    <input type="file" id="file" name="file" class="file-input" multiple style="display: none;">
+                    <!-- Button to trigger the file input -->
+                    <button id="upload-files-btn" class="upload-btn">
+                        <i class="fas fa-cloud-upload-alt"></i> Upload Files
+                    </button>
+                    <div id="upload-status"></div>
+                    <!-- Drag and drop functionality is now bound to chat-container -->
+                </div>
+                <div class="file-list">
+                    <h3>Available Files</h3>
+                    <div id="files-container" class="files">
+                        <p>Loading files...</p>
+                    </div>
+                </div>
+                <div class="conversation-controls">
+                    <button id="clear-conversation" class="clear-btn" title="Clear all messages in the current thread">
+                        <i class="fas fa-eraser"></i> Clear Conversation
+                    </button>
+                </div>
+            </div>
+            <div class="chat-container">
+                <div id="chat-messages" class="chat-messages">
+                    <div class="welcome-message">
+                        <h2>Welcome to KITT!</h2>
+                        <p>Select a model from the dropdown, optionally Drag and drop files to reference, and start chatting.</p>
+                        <p>-</p>
+                        <p>The settings button located next to the send buton is where you can set a system prompt and a reference prompt/settings</p>
+                    </div>
+                </div>
+                <div class="chat-input-container">
+                    <div class="input-wrapper">
+                            <div class="selected-files-display" id="selected-files-display"></div>
+                            <div class="input-row">
+                            <textarea id="message-input" placeholder="Type your message (Shift+Enter for newline)..." rows="1"></textarea>
+                            <button id="send-button" title="Send message"><i class="fas fa-paper-plane"></i></button>
+                            <button id="settings-button" title="Settings"><i class="fas fa-gear"></i></button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="right-sidebar">
+                <div class="threads-section">
+                    <h3>Threads</h3>
+                    <button id="new-thread-btn" class="new-thread-btn" title="Start a new conversation thread">
+                        <i class="fas fa-plus"></i> New Thread
+                    </button>
+                    <div id="threads-container" class="threads">
+                        <p class="no-threads-message">Loading threads...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+      
+      
+       
+        <div id="settings-modal" class="modal">
+            <div class="modal-content">
+                <span class="close-modal-btn" onclick="document.getElementById('settings-modal').style.display='none'">×</span>
+                <h3>Settings</h3>
+
+                <label for="system-prompt-input">System Prompt:</label>
+                <!-- System Prompt Textarea -->
+                <textarea id="system-prompt-input" class="modal-input" placeholder="e.g., You are a helpful assistant. Respond in Markdown."></textarea>
+
+                <!-- New Settings -->
+                <div class="setting-item">
+                    <label for="file-context-intro-input">File Context Intro Sentence:</label>
+                    <!-- Ensure it's a textarea, remove rows attribute -->
+                    <textarea id="file-context-intro-input" class="modal-input" placeholder="Text prepended/appended with file content..."></textarea>
+                </div>
+
+                <div class="setting-item setting-item-row">
+                    <label for="append-file-context-switch">Append File Context After Message:</label>
+                    <label class="switch">
+                        <input type="checkbox" id="append-file-context-switch">
+                        <span class="slider round"></span>
+                    </label>
+                    <span class="switch-label">(Default is Prepend Before Message)</span>
+                </div>
+                <!-- End New Settings -->
+
+                <div id="save-status"></div>
+            </div>
+        </div>
+
+    
+
+    
+        <div id="rename-thread-modal" class="modal">
+            <div class="modal-content">
+                 <span class="close-modal-btn" onclick="document.getElementById('rename-thread-modal').style.display='none'">×</span>
+                <h3>Rename Thread</h3>
+                <input type="text" id="thread-name-input" placeholder="Enter new thread name">
+                <div class="modal-buttons">
+                    <button id="cancel-rename-btn">Cancel</button>
+                    <button id="confirm-rename-btn">Rename</button>
+                </div>
+            </div>
+        </div>
+
+    </div>
+    <script src="/static/js/script.js"></script>
+</body>
+</html>

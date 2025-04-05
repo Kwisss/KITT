@@ -1,0 +1,1189 @@
+document.addEventListener('DOMContentLoaded', function() {
+    const state = {
+        selectedFiles: [],
+        isStreaming: false,
+        uploadInProgress: false,
+        saveTimeout: null,
+        currentThreadId: null,
+        renameThreadId: null,
+        abortController: null
+    };
+    const elements = {
+        modelDropdown: document.getElementById('model-dropdown'),
+        messageInput: document.getElementById('message-input'),
+        sendButton: document.getElementById('send-button'),
+        chatMessages: document.getElementById('chat-messages'),
+        selectedFilesDisplay: document.getElementById('selected-files-display'),
+        fileInput: document.getElementById('file'),
+        uploadStatus: document.getElementById('upload-status'),
+        filesContainer: document.getElementById('files-container'),
+        clearConversationBtn: document.getElementById('clear-conversation'),
+        dragDropArea: document.getElementById('drag-drop-area'),
+        settingsButton: document.getElementById('settings-button'),
+        settingsModal: document.getElementById('settings-modal'),
+        systemPromptInput: document.getElementById('system-prompt-input'),
+        saveStatusDiv: document.getElementById('save-status'),
+        newThreadBtn: document.getElementById('new-thread-btn'),
+        threadsContainer: document.getElementById('threads-container'),
+        renameThreadModal: document.getElementById('rename-thread-modal'),
+        threadNameInput: document.getElementById('thread-name-input'),
+        cancelRenameBtn: document.getElementById('cancel-rename-btn'),
+        confirmRenameBtn: document.getElementById('confirm-rename-btn')
+    };
+    elements.topMessageInserter = createMessageInserter(null); 
+    elements.topMessageInserter.id = 'top-message-inserter'; 
+    initializeApp();
+    function initializeApp() {
+        loadResources();
+        setupEventListeners();
+        fetchModels();
+        loadThreads();
+        loadFiles();
+        elements.chatMessages.appendChild(elements.topMessageInserter);
+        loadConversationHistory(); 
+    }
+    function loadResources() {
+        loadScript('https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js', () => 
+        loadCSS('https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/github-dark-dimmed.min.css'));
+    }
+    function setupEventListeners() {
+        elements.sendButton.addEventListener('click', sendMessage);
+        elements.messageInput.addEventListener('keydown', e => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+        elements.messageInput.addEventListener('input', function() {
+            this.style.height = 'auto';
+            this.style.height = this.scrollHeight + 'px';
+        });
+        elements.clearConversationBtn.addEventListener('click', clearConversation);
+        elements.dragDropArea.addEventListener('click', () => elements.fileInput.click());
+        elements.fileInput.addEventListener('change', function() {
+            if (this.files?.length > 0) uploadFiles(this.files);
+        });
+        setupDragDrop();
+        setupSettings();
+        setupThreadEvents();
+    }
+    function setupDragDrop() {
+        const area = elements.dragDropArea;
+        const handlers = {
+            dragover: e => {
+                e.preventDefault();
+                e.stopPropagation();
+                area.classList.add('dragover');
+            },
+            dragleave: e => {
+                e.preventDefault();
+                e.stopPropagation();
+                area.classList.remove('dragover');
+            },
+            drop: e => {
+                e.preventDefault();
+                e.stopPropagation();
+                area.classList.remove('dragover');
+                const files = e.dataTransfer.files;
+                if (files?.length > 0) uploadFiles(files);
+            }
+        };
+        Object.entries(handlers).forEach(([event, handler]) => 
+            area.addEventListener(event, handler));
+    }
+    function setupSettings() {
+        elements.settingsButton.addEventListener('click', () => {
+            elements.settingsModal.style.display = 'flex';
+            elements.systemPromptInput.value = localStorage.getItem('systemPrompt') || 'You are a helpful assistant.';
+        });
+        window.addEventListener('click', event => {
+            if (event.target === elements.settingsModal) {
+                elements.settingsModal.style.display = 'none';
+            }
+        });
+        elements.systemPromptInput.addEventListener('input', () => {
+            if (state.saveTimeout) clearTimeout(state.saveTimeout);
+            state.saveTimeout = setTimeout(() => {
+                localStorage.setItem('systemPrompt', elements.systemPromptInput.value);
+                elements.saveStatusDiv.textContent = 'Saved!';
+                elements.saveStatusDiv.style.color = '#28a745';
+                setTimeout(() => {
+                    elements.saveStatusDiv.textContent = '';
+                }, 2000);
+            }, 1000);
+        });
+    }
+    function setupThreadEvents() {
+        elements.newThreadBtn.addEventListener('click', createNewThread);
+        elements.cancelRenameBtn.addEventListener('click', () => 
+            elements.renameThreadModal.style.display = 'none');
+        elements.confirmRenameBtn.addEventListener('click', () => {
+            const newName = elements.threadNameInput.value.trim();
+            if (newName && state.renameThreadId) {
+                renameThread(state.renameThreadId, newName);
+            }
+        });
+        window.addEventListener('click', event => {
+            if (event.target === elements.renameThreadModal) {
+                elements.renameThreadModal.style.display = 'none';
+            }
+        });
+    }
+    function loadScript(url, callback) {
+        const script = document.createElement('script');
+        script.src = url;
+        script.onload = callback;
+        document.head.appendChild(script);
+    }
+    function loadCSS(url) {
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = url;
+        document.head.appendChild(link);
+    }
+    async function fetchData(url, options = {}) {
+        try {
+            const response = await fetch(url, {
+                ...options,
+                credentials: 'include'
+            });
+            return await response.json();
+        } catch (error) {
+            console.error(`Error fetching ${url}:`, error);
+            return { success: false, error };
+        }
+    }
+    async function fetchModels() {
+        const data = await fetchData('/api/models');
+        elements.modelDropdown.innerHTML = '';
+        if (!data.length) {
+            elements.modelDropdown.innerHTML = '<option value="">No models available</option>';
+            return;
+        }
+        data.forEach(model => {
+            const option = document.createElement('option');
+            option.value = model.name;
+            option.textContent = model.name;
+            elements.modelDropdown.appendChild(option);
+        });
+    }
+    async function loadFiles() {
+        const files = await fetchData('/api/files');
+        displayFiles(files);
+    }
+    async function loadConversationHistory(updateIds = false) {
+        const data = await fetchData('/api/conversation/history');
+        if (data.success) {
+            const messagesToRemove = elements.chatMessages.querySelectorAll('.message, .message-inserter:not(#top-message-inserter)');
+            messagesToRemove.forEach(el => el.remove());
+            if (data.history?.length > 0) {
+                data.history.forEach(msg => {
+                    const sender = msg.role === 'assistant' ? 'bot' : msg.role;
+                    addMessageAndInserterToChat(msg.content, sender, msg.thinking || null, msg.id);
+                });
+                document.querySelectorAll('.message').forEach(processMessageContent);
+            } else if (elements.chatMessages.children.length <= 1) { 
+                 addWelcomeMessage(); 
+            }
+            state.currentThreadId = data.thread_id; 
+        } else {
+             elements.chatMessages.innerHTML = ''; 
+             elements.chatMessages.appendChild(elements.topMessageInserter); 
+             addWelcomeMessage();
+        }
+        elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+    }
+    function displayFiles(files) {
+        elements.filesContainer.innerHTML = '';
+        if (!files.length) {
+            elements.filesContainer.innerHTML = '<p>No files uploaded yet.</p>';
+            return;
+        }
+        files.forEach(file => {
+            const fileItem = document.createElement('div');
+            fileItem.className = 'file-item';
+            const fileName = document.createElement('div');
+            fileName.className = 'file-name';
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.id = `file-${file}`;
+            checkbox.dataset.filename = file;
+            checkbox.className = 'file-checkbox';
+            checkbox.addEventListener('change', () => handleFileSelection(checkbox));
+            const label = document.createElement('label');
+            label.htmlFor = `file-${file}`;
+            label.textContent = file;
+            const deleteBtn = document.createElement('button');
+            deleteBtn.className = 'delete-btn';
+            deleteBtn.innerHTML = '<i class="fas fa-trash"></i>';
+            deleteBtn.addEventListener('click', () => deleteFile(file));
+            fileName.append(checkbox, label);
+            fileItem.append(fileName, deleteBtn);
+            elements.filesContainer.appendChild(fileItem);
+        });
+    }
+    function handleFileSelection(checkbox) {
+        const filename = checkbox.dataset.filename;
+        if (checkbox.checked) {
+            if (!state.selectedFiles.includes(filename)) {
+                state.selectedFiles.push(filename);
+            }
+        } else {
+            state.selectedFiles = state.selectedFiles.filter(file => file !== filename);
+        }
+        updateSelectedFilesDisplay();
+    }
+    function updateSelectedFilesDisplay() {
+        elements.selectedFilesDisplay.innerHTML = '';
+        state.selectedFiles.forEach(file => {
+            const fileTag = document.createElement('div');
+            fileTag.className = 'selected-file-tag';
+            const fileName = document.createElement('span');
+            fileName.textContent = file;
+            const removeButton = document.createElement('button');
+            removeButton.className = 'remove-file';
+            removeButton.innerHTML = '×';
+            removeButton.addEventListener('click', () => {
+                state.selectedFiles = state.selectedFiles.filter(f => f !== file);
+                const checkbox = document.querySelector(`[data-filename="${file}"]`);
+                if (checkbox) checkbox.checked = false;
+                updateSelectedFilesDisplay();
+            });
+            fileTag.append(fileName, removeButton);
+            elements.selectedFilesDisplay.appendChild(fileTag);
+        });
+    }
+    async function uploadFiles(files) {
+        if (state.uploadInProgress) return;
+        state.uploadInProgress = true;
+        elements.uploadStatus.textContent = 'Uploading...';
+        elements.uploadStatus.className = 'uploading';
+        let uploadCount = 0;
+        let successCount = 0;
+        let errorCount = 0;
+        for (const file of files) {
+            const formData = new FormData();
+            formData.append('file', file);
+            try {
+                const response = await fetch('/api/upload', {
+                    method: 'POST',
+                    body: formData,
+                    credentials: 'include'
+                });
+                const data = await response.json();
+                uploadCount++;
+                if (data.success) {
+                    successCount++;
+                } else {
+                    errorCount++;
+                    console.error('Upload failed for file:', file.name, data.error);
+                }
+            } catch (error) {
+                uploadCount++;
+                errorCount++;
+                console.error('Error uploading file:', file.name, error);
+            }
+            if (uploadCount === files.length) {
+                state.uploadInProgress = false;
+                updateUploadStatus(successCount, errorCount, files.length);
+                elements.fileInput.value = '';
+                loadFiles();
+            }
+        }
+    }
+    function updateUploadStatus(successCount, errorCount, totalFiles) {
+        if (errorCount === 0) {
+            elements.uploadStatus.textContent = 'Upload successful!';
+            elements.uploadStatus.className = 'success';
+        } else if (successCount === 0) {
+            elements.uploadStatus.textContent = 'Upload failed';
+            elements.uploadStatus.className = 'error';
+        } else {
+            elements.uploadStatus.textContent = `Uploaded ${successCount} of ${totalFiles} files`;
+            elements.uploadStatus.className = 'success';
+        }
+        setTimeout(() => {
+            elements.uploadStatus.textContent = '';
+            elements.uploadStatus.className = '';
+        }, 3000);
+    }
+    async function deleteFile(filename) {
+        const data = await fetchData(`/api/files/${filename}`, { method: 'DELETE' });
+        if (!confirm(`Deleting "${filename}". Are you sure?`)) return;
+        if (data.success) {
+            state.selectedFiles = state.selectedFiles.filter(file => file !== filename);
+            updateSelectedFilesDisplay();
+            loadFiles();
+        } else {
+            console.error('Error deleting file:', data.error);
+        }
+    }
+    async function clearConversation() {
+        if (!confirm(`Deleting conversation. Are you sure?`)) return; 
+        const data = await fetchData('/api/conversation/clear', { method: 'POST' });
+        if (data.success) {
+            const messagesToRemove = elements.chatMessages.querySelectorAll('.message, .message-inserter:not(#top-message-inserter)');
+            messagesToRemove.forEach(el => el.remove());
+            if (!document.querySelector('.welcome-message')) {
+                addWelcomeMessage();
+            }
+            console.log('Renaming thread to "New Thread" after clearing');
+            if (state.currentThreadId) {
+                 renameThread(state.currentThreadId, 'New Thread');
+            } else {
+                console.warn("Cannot rename thread, currentThreadId is not set.");
+            }
+        } else {
+            console.error('Failed to clear conversation:', data);
+            alert('Failed to clear conversation.'); 
+        }
+    }
+    function createMessageInserter(precedingMessageId) {
+        const inserterDiv = document.createElement('div');
+        inserterDiv.className = 'message-inserter';
+        inserterDiv.dataset.precedingMessageId = precedingMessageId || ''; 
+        const icon = document.createElement('i');
+        icon.className = 'fas fa-plus insert-icon';
+        const leftArea = document.createElement('div');
+        leftArea.className = 'insert-area left';
+        leftArea.title = 'Insert Assistant message here';
+        leftArea.addEventListener('click', () => showNewMessageInput(inserterDiv, 'assistant'));
+        const rightArea = document.createElement('div');
+        rightArea.className = 'insert-area right';
+        rightArea.title = 'Insert User message here';
+        rightArea.addEventListener('click', () => showNewMessageInput(inserterDiv, 'user'));
+        inserterDiv.append(leftArea, rightArea, icon); 
+        return inserterDiv;
+    }
+    function showNewMessageInput(inserterElement, role) {
+        const existingInput = document.querySelector('.new-message-input-area');
+        if (existingInput) {
+            existingInput.remove();
+        }
+        document.querySelectorAll('.inserting').forEach(el => el.classList.remove('inserting'));
+        const inputArea = document.createElement('div');
+        inputArea.className = 'new-message-input-area';
+        const textarea = document.createElement('textarea');
+        textarea.placeholder = `Enter new ${role} message...`;
+        const buttonsDiv = document.createElement('div');
+        buttonsDiv.className = 'input-buttons';
+        const saveBtn = document.createElement('button');
+        saveBtn.textContent = `Save ${role === 'user' ? 'User' : 'Assistant'}`;
+        saveBtn.className = `save-btn ${role}`; 
+        saveBtn.addEventListener('click', async () => {
+            const content = textarea.value.trim();
+            if (content) {
+                await insertNewMessage(inserterElement.dataset.precedingMessageId, role, content);
+                inputArea.remove(); 
+                 inserterElement.classList.remove('inserting'); 
+            }
+        });
+        const cancelBtn = document.createElement('button');
+        cancelBtn.textContent = 'Cancel';
+        cancelBtn.className = 'cancel-btn';
+        cancelBtn.addEventListener('click', () => {
+            inputArea.remove();
+             inserterElement.classList.remove('inserting'); 
+        });
+        buttonsDiv.append(saveBtn, cancelBtn);
+        inputArea.append(textarea, buttonsDiv);
+        inserterElement.parentNode.insertBefore(inputArea, inserterElement.nextSibling);
+        inserterElement.classList.add('inserting'); 
+        textarea.focus();
+    }
+    async function insertNewMessage(precedingMessageId, role, content) {
+        try {
+            const response = await fetch('/api/messages/insert', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify({ precedingMessageId, role, content }),
+                credentials: 'include'
+            });
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+            }
+            const data = await response.json();
+            if (data.success && data.message) {
+                const targetInserter = document.querySelector(`.message-inserter[data-preceding-message-id="${precedingMessageId || ''}"]`);
+                if (targetInserter) {
+                    const newMessageElement = addMessageToChat(
+                        data.message.content,
+                        data.message.role === 'assistant' ? 'bot' : data.message.role,
+                        data.message.thinking || null,
+                        data.message.id
+                    );
+                    targetInserter.parentNode.insertBefore(newMessageElement, targetInserter);
+                    const newInserter = createMessageInserter(data.message.id);
+                    targetInserter.parentNode.insertBefore(newInserter, newMessageElement.nextSibling);
+                    processMessageContent(newMessageElement);
+                } else {
+                     console.error("Target inserter not found for ID:", precedingMessageId);
+                     loadConversationHistory();
+                }
+            } else {
+                throw new Error(data.error || 'Failed to insert message');
+            }
+        } catch (error) {
+            console.error('Error inserting message:', error);
+            alert(`Error inserting message: ${error.message}`);
+        }
+    }
+    function addWelcomeMessage() {
+        const welcomeMessage = document.createElement('div');
+        welcomeMessage.className = 'welcome-message';
+        welcomeMessage.innerHTML = `
+            <h2>Welcome to Ollama Chat!</h2>
+            <p>Select a model from the dropdown, optionally select files to reference, and start chatting.</p>
+        `;
+        elements.chatMessages.appendChild(welcomeMessage);
+    }
+    function createKittIndicator() {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'typing-indicator';
+        const kittDiv = document.createElement('div');
+        kittDiv.className = 'typing-kitt';
+        const scanner = document.createElement('div');
+        scanner.className = 'scanner';
+        kittDiv.appendChild(scanner);
+        const numRectangles = 10;
+        const rectWidth = (200 / numRectangles) - 1;
+        for (let i = 0; i < numRectangles; i++) {
+            const rect = document.createElement('div');
+            rect.className = 'rectangle';
+            rect.style.width = rectWidth + 'px';
+            kittDiv.appendChild(rect);
+        }
+        wrapper.appendChild(kittDiv);
+        const animateRectangles = () => {
+            const kittRect = kittDiv.getBoundingClientRect();
+            const scannerRect = scanner.getBoundingClientRect();
+            const scannerPos = scannerRect.left - kittRect.left;
+            const rectangles = kittDiv.querySelectorAll('.rectangle');
+            rectangles.forEach(rect => {
+                const rectRect = rect.getBoundingClientRect();
+                const rectPos = rectRect.left - kittRect.left;
+                const distance = Math.abs(scannerPos - rectPos);
+                if (distance < 30) {
+                    const intensity = 1 - (distance / 30);
+                    const red = Math.floor(128 + (127 * intensity));
+                    rect.style.backgroundColor = `rgb(${red}, 0, 0)`;
+                } else {
+                    rect.style.backgroundColor = '#600';
+                }
+            });
+        };
+        const intervalId = setInterval(animateRectangles, 50);
+        wrapper.intervalId = intervalId;
+        return wrapper;
+    }
+    async function sendMessage() {
+        const message = elements.messageInput.value.trim();
+        const selectedModel = elements.modelDropdown.value;
+        if (!message || !selectedModel || state.isStreaming) return;
+        const userMessageElement = addMessageAndInserterToChat(message, 'user', null, null); 
+        const tempUserMessageId = userMessageElement.dataset.messageId; 
+        elements.messageInput.value = '';
+        elements.messageInput.style.height = '50px'; 
+        const typingIndicator = createKittIndicator();
+        elements.chatMessages.appendChild(typingIndicator); 
+        elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight; 
+        state.isStreaming = true;
+        toggleStopButton(true);
+        state.abortController = new AbortController();
+        const payload = {
+            model: selectedModel,
+            message: message, 
+            references: state.selectedFiles,
+            systemPrompt: localStorage.getItem('systemPrompt') || 'You are a helpful assistant.'
+        };
+        let botMessageElement = null; 
+        let botInserterElement = null; 
+        try {
+            const response = await fetch('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' }, 
+                body: JSON.stringify(payload),
+                credentials: 'include',
+                signal: state.abortController.signal
+            });
+            if (!response.ok) throw new Error(`Network response was not ok: ${response.statusText}`);
+            if (!response.body) throw new Error('Response body is null');
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let accumulatedContent = '';
+            let accumulatedThinking = '';
+            let hasThinking = false;
+            let finalBotMessageId = null;
+            let serverResponseReceived = false; 
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) {
+                    console.log("Stream finished.");
+                    break; 
+                }
+                const chunk = decoder.decode(value, { stream: true });
+                const eventLines = chunk.split('\n\n');
+                for (const line of eventLines) {
+                    if (line.startsWith('data: ')) {
+                        try {
+                            const data = JSON.parse(line.substring(6));
+                            if (data.content) {
+                                accumulatedContent += data.content;
+                                if (!hasThinking && accumulatedContent.includes('</think>')) {
+                                    const parts = accumulatedContent.split('</think>', 2);
+                                    accumulatedThinking = parts[0].replace('<think>', '').trimStart();
+                                    accumulatedContent = parts[1].trimStart();
+                                    hasThinking = true;
+                                }
+                                if (!botMessageElement) {
+                                    if (typingIndicator.parentNode) {
+                                        typingIndicator.remove();
+                                        clearInterval(typingIndicator.intervalId);
+                                    }
+                                    botMessageElement = addMessageAndInserterToChat(
+                                        accumulatedContent,
+                                        'bot',
+                                        hasThinking ? accumulatedThinking : null,
+                                        `temp-bot-${Date.now()}` 
+                                    );
+                                    botInserterElement = botMessageElement.nextElementSibling;
+                                } else {
+                                    updateMessage(botMessageElement, accumulatedContent, hasThinking ? accumulatedThinking : null);
+                                }
+                                elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+                            }
+                            if (data.done) {
+                                console.log('Received done signal from stream.');
+                                serverResponseReceived = true; 
+                                if (botMessageElement) {
+                                    updateMessage(botMessageElement, accumulatedContent, hasThinking ? accumulatedThinking : null);
+                                    processMessageContent(botMessageElement);
+                                    await loadConversationHistory(true); 
+                                }
+                                state.isStreaming = false;
+                                toggleStopButton(false);
+                                await generateThreadTitle(); 
+                            }
+                        } catch (e) {
+                            console.error('Error parsing SSE data:', e, "Line:", line);
+                        }
+                    }
+                }
+            } 
+            if (!serverResponseReceived) {
+                 console.warn("Stream ended without explicit 'done' event.");
+                 if (typingIndicator.parentNode) {
+                     typingIndicator.remove();
+                     clearInterval(typingIndicator.intervalId);
+                 }
+                 if (botMessageElement) {
+                     processMessageContent(botMessageElement);
+                     await loadConversationHistory(true); 
+                 }
+                 state.isStreaming = false;
+                 toggleStopButton(false);
+                 await generateThreadTitle();
+            }
+        } catch (error) {
+            if (typingIndicator.parentNode) {
+                typingIndicator.remove();
+                clearInterval(typingIndicator.intervalId);
+            }
+            state.isStreaming = false;
+            toggleStopButton(false);
+            if (error.name === 'AbortError') {
+                console.log('Request was aborted by user');
+                if (botMessageElement) {
+                    const contentDiv = botMessageElement.querySelector('.message-content');
+                    if (contentDiv) {
+                        contentDiv.innerHTML += '<p><em>[Generation stopped by user]</em></p>';
+                    }
+                    await loadConversationHistory(true);
+                }
+            } else {
+                console.error('Error during chat fetch/stream:', error);
+                addMessageAndInserterToChat(`Error: ${error.message || 'Could not communicate with Ollama.'}`, 'bot');
+            }
+        } finally {
+             if (typingIndicator.parentNode) {
+                 typingIndicator.remove();
+                 clearInterval(typingIndicator.intervalId);
+             }
+             state.isStreaming = false;
+             toggleStopButton(false);
+        }
+    }
+    async function readStream(reader, decoder, typingIndicator) {
+      let botMessage = '';
+      let botThinking = '';
+      let hasThinking = false;
+      let botMessageId = `temp-${Date.now() + 1}`;
+      let messageElement = null;
+      try {
+        while (true) {
+          try {
+            const { done, value } = await reader.read();
+            if (done) {
+                clearInterval(typingIndicator.intervalId);
+                typingIndicator.remove();
+                state.isStreaming = false;
+                toggleStopButton(false);
+                await generateThreadTitle();
+                break;
+            }
+            const chunk = decoder.decode(value, { stream: true });
+            const lines = chunk.split('\n\n');
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                try {
+                  const data = JSON.parse(line.substring(6));
+                  if (data.content) {
+                    botMessage += data.content;
+                    if (!hasThinking && botMessage.includes('</think>')) {
+                      const parts = botMessage.split('</think>');
+                      botThinking = parts[0].replace('<think>', '').trimStart();
+                      botMessage = parts[1].trimStart();
+                      hasThinking = true;
+                    }
+                    if (hasThinking) {
+                      botMessage = botMessage.trimStart();
+                    }
+                    if (!messageElement) {
+                      typingIndicator.remove();
+                      messageElement = addMessageToChat(botMessage.trimStart(), 'bot', hasThinking ? botThinking : null, botMessageId);
+                    } else {
+                      updateMessage(messageElement, botMessage.trimStart(), hasThinking ? botThinking : null);
+                    }
+                  }
+                  if (data.done) {
+                    console.log('Received done signal');
+                    if (hasThinking) {
+                      updateMessage(messageElement, botMessage, botThinking);
+                    }
+                    updateMessageFades();
+                    state.isStreaming = false;
+                    toggleStopButton(false);
+                    if (serverResponse.messageId) {
+                      messageElement.dataset.messageId = serverResponse.messageId; 
+                    };
+                    processMessageContent(messageElement);
+                  }
+                } catch (e) {
+                  console.error('Error parsing SSE data:', e);
+                }
+              }
+            }
+          } catch (error) {
+            if (error.name === 'AbortError') {
+              console.log('Stream reading was aborted by user');
+              if (messageElement) {
+                const messageText = messageElement.querySelector('.message-text');
+                if (messageText) {
+                  messageText.innerHTML += '<p><em>[Generation stopped by user]</em></p>';
+                }
+              }
+              throw error; 
+            } else {
+              throw error; 
+            }
+          }
+        }
+      } catch (error) {
+        if (error.name === 'AbortError') {
+          console.log('Stream reading was aborted by user');
+        } else {
+          console.error('Error reading stream:', error);
+        }
+        clearInterval(typingIndicator.intervalId);
+        typingIndicator.remove();
+        state.isStreaming = false;
+        toggleStopButton(false);
+      }
+    }
+    async function generateThreadTitle() {
+        const selectedModel = elements.modelDropdown.value;
+        console.log("generateThreadTitle - Model from dropdown:", selectedModel);
+        const messageElements = document.querySelectorAll('.message');
+        if (messageElements.length === 0 || messageElements.length > 6 ) return; 
+        const conversation = {
+            messages: [],
+            threadId: state.currentThreadId,
+            model: selectedModel
+        };
+        for (const messageElement of messageElements) {
+            const isUser = messageElement.classList.contains('user');
+            const messageContentElement = messageElement.querySelector('.message-content');
+            if (messageContentElement) {
+                let content = messageContentElement.textContent;
+                conversation.messages.push({
+                    role: isUser ? 'user' : 'assistant',
+                    content: content
+                });
+            }
+        }
+        console.log("generateThreadTitle - Conversation object:", conversation);
+        try {
+            const response = await fetch('/api/generate-title', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(conversation)
+            });
+            if (!response.ok) throw new Error('Failed to generate title');
+            const data = await response.json();
+            console.log("generateThreadTitle - Response data:", data);
+            if (data.success && data.title) {
+                await renameThread(state.currentThreadId, data.title);
+            }
+        } catch (error) {
+            console.error('Error generating thread title:', error);
+        }
+    }
+    function toggleStopButton(showStop) {
+      const sendButton = document.getElementById('send-button');
+      if (showStop) {
+        sendButton.innerHTML = '<i class="fas fa-stop"></i>';
+        sendButton.title = 'Stop generation';
+        sendButton.classList.add('stop-button');
+        sendButton.onclick = stopGeneration;
+      } else {
+        sendButton.innerHTML = '<i class="fas fa-paper-plane"></i>';
+        sendButton.title = 'Send message';
+        sendButton.classList.remove('stop-button');
+        sendButton.onclick = sendMessage;
+      }
+    }
+    function stopGeneration() {
+      if (state.abortController) {
+        state.abortController.abort();
+        state.abortController = null;
+      }
+    }
+    function updateMessageFades() {
+        const messageContents = document.querySelectorAll('.message-content');
+        messageContents.forEach(content => {
+            content.classList.toggle('short-message', content.scrollHeight <= 100);
+        });
+    }
+function addMessageToChat(content, sender, thinking = null, messageId = null) {
+    const messageDiv = document.createElement('div');
+    messageDiv.className = `message ${sender}`; 
+    if (messageId) {
+        messageDiv.dataset.messageId = messageId;
+    } else {
+        messageDiv.dataset.messageId = `temp-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    }
+    if (thinking && sender === 'bot') {
+        const thinkingDiv = document.createElement('div');
+        thinkingDiv.className = 'thinking-section';
+        const thinkingToggle = document.createElement('button');
+        thinkingToggle.className = 'thinking-toggle';
+        thinkingToggle.textContent = 'Show thinking';
+        const thinkingContent = document.createElement('div');
+        thinkingContent.className = 'thinking-content';
+        thinkingContent.style.display = 'none';
+        thinkingContent.innerHTML = formatMessage(thinking || '');
+        thinkingToggle.addEventListener('click', function() {
+            const isHidden = thinkingContent.style.display === 'none';
+            thinkingContent.style.display = isHidden ? 'block' : 'none';
+            thinkingToggle.textContent = isHidden ? 'Hide thinking' : 'Show thinking';
+        });
+        thinkingDiv.append(thinkingToggle, thinkingContent);
+        messageDiv.appendChild(thinkingDiv);
+    }
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'message-content';
+    contentDiv.innerHTML = formatMessage(content || '');
+    messageDiv.appendChild(contentDiv);
+    const actionsDiv = document.createElement('div');
+    actionsDiv.className = 'message-actions';
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'delete-message-btn';
+    deleteBtn.innerHTML = '<i class="fas fa-trash"></i>';
+    deleteBtn.title = 'Delete message and subsequent history'; 
+    deleteBtn.addEventListener('click', async () => {
+        const currentId = messageDiv.dataset.messageId;
+        if (!currentId || currentId.startsWith('temp-')) {
+            console.warn('Cannot delete unsaved or temporary message.');
+            return;
+        }
+        if (state.isStreaming) {
+            alert('Please wait until generation is complete before deleting.');
+            return;
+        }
+        if (confirm("Delete this message and ALL subsequent messages in this thread? This cannot be undone.")) {
+            try {
+                const response = await fetch(`/api/messages/${currentId}`, {
+                    method: 'DELETE',
+                    credentials: 'include' 
+                });
+                if (response.ok) {
+                    await loadConversationHistory();
+                } else {
+                    const errorText = await response.text();
+                    alert(`Failed to delete message: ${response.statusText}`);
+                    console.error('Failed to delete message:', errorText);
+                }
+            } catch (error) {
+                alert('An error occurred while trying to delete the message.');
+                console.error('Error during message deletion fetch:', error);
+            }
+        }
+    });
+    actionsDiv.appendChild(deleteBtn);
+    const editBtn = document.createElement('button');
+    editBtn.className = 'edit-message-btn';
+    editBtn.innerHTML = '<i class="fas fa-edit"></i>';
+    editBtn.title = 'Edit message and resubmit'; 
+    editBtn.addEventListener('click', () => {
+        const currentId = messageDiv.dataset.messageId;
+        if (currentId && !currentId.startsWith('temp-')) {
+             if (state.isStreaming) {
+                 alert('Please wait until generation is complete before editing.');
+                 return;
+             }
+            editMessage(currentId);
+        } else {
+            console.warn('Cannot edit unsaved or temporary message.');
+        }
+    });
+    actionsDiv.appendChild(editBtn);
+    messageDiv.appendChild(actionsDiv);
+    return messageDiv;
+}
+    function addMessageAndInserterToChat(content, sender, thinking = null, messageId = null) {
+        const messageElement = addMessageToChat(content, sender, thinking, messageId);
+        const inserterElement = createMessageInserter(messageId); 
+        elements.chatMessages.appendChild(messageElement);
+        elements.chatMessages.appendChild(inserterElement);
+        return messageElement;
+    }
+    async function deleteMessage(messageId) {
+        try {
+            const response = await fetch(`/api/messages/${messageId}`, { 
+                method: 'DELETE' 
+            });
+            if (response.ok) {
+                const data = response.status !== 204 ? await response.json() : null;
+                if (data?.success || !data) {
+                    const element = document.querySelector(
+                        `.message[data-message-id="${messageId}"]`
+                    );
+                    if (element) {
+                        element.remove();
+                        return true;
+                    }
+                }
+            }
+            return false;
+        } catch (error) {
+            console.error('Error deleting message:', error);
+            return false;
+        }
+    }
+    function editMessage(messageId) {
+        if (state.isStreaming) return;
+        const messageElement = document.querySelector(`.message[data-message-id="${messageId}"]`);
+        if (!messageElement) return;
+        const contentDiv = messageElement.querySelector('.message-content');
+        const actionsDiv = messageElement.querySelector('.message-actions'); 
+        const editBtn = actionsDiv?.querySelector('.edit-message-btn'); 
+        if (contentDiv.querySelector('.edit-textarea')) {
+            return;
+        }
+        const nextInserter = messageElement.nextElementSibling;
+        if (nextInserter && nextInserter.classList.contains('message-inserter')) {
+            nextInserter.style.display = 'none'; 
+        }
+         messageElement.classList.add('editing'); 
+        const originalHTML = contentDiv.innerHTML;
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = originalHTML;
+        const originalText = tempDiv.textContent || ''; 
+        contentDiv.innerHTML = `
+            <textarea class="edit-textarea">${originalText}</textarea>
+            <div class="input-buttons">
+                <button class="save-edit-btn">Save & Resubmit</button>
+                <button class="cancel-edit-btn">Cancel</button>
+            </div>
+        `;
+        if (editBtn) editBtn.disabled = true; 
+        const saveBtn = contentDiv.querySelector('.save-edit-btn');
+        const cancelBtn = contentDiv.querySelector('.cancel-edit-btn');
+        const textarea = contentDiv.querySelector('.edit-textarea');
+        textarea.focus();
+        textarea.select(); 
+        saveBtn.addEventListener('click', async () => {
+            const newContent = textarea.value.trim();
+            if (newContent) {
+                const response = await fetch(`/api/messages/${messageId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content: newContent }),
+                    credentials: 'include'
+                });
+                if (response.ok) {
+                    loadConversationHistory();
+                } else {
+                     alert('Failed to save edit.');
+                     console.error("Failed to save edit:", await response.text());
+                     contentDiv.innerHTML = originalHTML;
+                     if (editBtn) editBtn.disabled = false;
+                     messageElement.classList.remove('editing');
+                     if (nextInserter) nextInserter.style.display = ''; 
+                }
+            } else {
+                 contentDiv.innerHTML = originalHTML;
+                 if (editBtn) editBtn.disabled = false;
+                 messageElement.classList.remove('editing');
+                 if (nextInserter) nextInserter.style.display = ''; 
+            }
+        });
+        cancelBtn.addEventListener('click', () => {
+            contentDiv.innerHTML = originalHTML; 
+            if (editBtn) editBtn.disabled = false; 
+            messageElement.classList.remove('editing'); 
+            if (nextInserter) nextInserter.style.display = ''; 
+        });
+    }
+    function updateMessage(element, content, thinking = null) {
+        const contentDiv = element.querySelector('.message-content'); 
+        if (contentDiv) { 
+             contentDiv.innerHTML = formatMessage(content); 
+        } else {
+             console.warn("Could not find message-content div to update in:", element);
+        }
+        let thinkingContent = element.querySelector('.thinking-content');
+        if (thinking !== null) { 
+            if (!thinkingContent) {
+                const thinkingDiv = document.createElement('div');
+                thinkingDiv.className = 'thinking-section';
+                const thinkingToggle = document.createElement('button');
+                thinkingToggle.className = 'thinking-toggle';
+                thinkingToggle.textContent = 'Show thinking';
+                thinkingContent = document.createElement('div'); 
+                thinkingContent.className = 'thinking-content';
+                thinkingContent.style.display = 'none';
+                thinkingToggle.addEventListener('click', function() {
+                    const isHidden = thinkingContent.style.display === 'none';
+                    thinkingContent.style.display = isHidden ? 'block' : 'none';
+                    thinkingToggle.textContent = isHidden ? 'Hide thinking' : 'Show thinking';
+                });
+                thinkingDiv.append(thinkingToggle, thinkingContent);
+                if (contentDiv) {
+                    element.insertBefore(thinkingDiv, contentDiv);
+                } else {
+                    element.appendChild(thinkingDiv);
+                }
+            }
+            thinkingContent.innerHTML = formatMessage(thinking);
+        } else if (thinkingContent) {
+             thinkingContent.closest('.thinking-section')?.remove();
+        }
+             elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+    }
+    function formatMessage(content) {
+        if (content === null || typeof content === 'undefined') {
+            return ''; 
+        }
+        content = String(content);
+        function escapeHTML(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        const parts = [];
+        let lastIndex = 0;
+        const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g;
+        let match;
+        while ((match = codeBlockRegex.exec(content)) !== null) {
+            if (match.index > lastIndex) {
+                parts.push({
+                    type: 'text',
+                    content: escapeHTML(content.substring(lastIndex, match.index))
+                });
+            }
+            parts.push({
+                type: 'code',
+                language: match[1] || '',
+                content: escapeHTML(match[2])
+            });
+            lastIndex = match.index + match[0].length;
+        }
+        if (lastIndex < content.length) {
+            parts.push({
+                type: 'text',
+                content: escapeHTML(content.substring(lastIndex))
+            });
+        }
+        return parts.map(part => {
+            if (part.type === 'code') {
+                const langTag = part.language ?
+                    `<div class="language-tag">${part.language}</div>` : '';
+                return `${langTag}<pre><code class="language-${part.language || 'plaintext'}">${part.content}</code></pre>`;
+            } else {
+                 return part.content
+                    .replace(/\n/g, '<br>') 
+                    .replace(/`([^`]+)`/g, (match, code) => `<code>${code}</code>`) 
+                    .replace(/^ {4}/gm, '    ') 
+                    .replace(/ {2}/g, '  '); 
+            }
+        }).join('');
+    }
+    function processMessageContent(messageElement) {
+        if (!messageElement || !window.hljs) return;
+        const allCodeBlocks = [
+            ...Array.from(messageElement.querySelectorAll('pre code')),
+            ...Array.from(messageElement.querySelectorAll('.thinking-content pre code'))
+        ];
+        allCodeBlocks.forEach(block => {
+            hljs.highlightElement(block);
+        });
+    }
+    async function loadThreads() {
+        const data = await fetchData('/api/threads');
+        if (data.success && data.threads) {
+            displayThreads(data.threads, data.active_thread);
+            state.currentThreadId = data.active_thread;
+        } else {
+            return
+        }
+    }
+    function displayThreads(threads, activeThreadId) {
+        elements.threadsContainer.innerHTML = '';
+        if (!threads.length) {
+            elements.threadsContainer.innerHTML = '<p class="no-threads-message">No threads yet</p>';
+            return;
+        }
+        threads
+            .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))
+            .forEach(thread => {
+                const threadItem = document.createElement('div');
+                threadItem.className = 'thread-item';
+                if (thread.id === activeThreadId) {
+                    threadItem.classList.add('active');
+                }
+                const threadName = document.createElement('div');
+                threadName.className = 'thread-name';
+                threadName.textContent = thread.name;
+                threadName.title = thread.name;
+                const threadOptions = document.createElement('div');
+                threadOptions.className = 'thread-options';
+                const renameBtn = document.createElement('button');
+                renameBtn.className = 'thread-option-btn rename-btn';
+                renameBtn.innerHTML = '<i class="fas fa-edit"></i>';
+                renameBtn.title = 'Rename thread';
+                renameBtn.addEventListener('click', e => {
+                    e.stopPropagation();
+                    showRenameModal(thread.id, thread.name);
+                });
+                const deleteBtn = document.createElement('button');
+                deleteBtn.className = 'thread-option-btn delete-btn';
+                deleteBtn.innerHTML = '<i class="fas fa-trash"></i>';
+                deleteBtn.title = 'Delete thread';
+                deleteBtn.addEventListener('click', e => {
+                    e.stopPropagation();
+                    if (confirm(`Are you sure you want to delete "${thread.name}"?`)) {
+                        deleteThread(thread.id);
+                    }
+                });
+                threadOptions.append(renameBtn, deleteBtn);
+                threadItem.append(threadName, threadOptions);
+                threadItem.addEventListener('click', () => activateThread(thread.id));
+                elements.threadsContainer.appendChild(threadItem);
+            });
+    }
+    async function createNewThread() {
+        if (state.isStreaming) {
+             alert("Please wait for the current response to finish.");
+             return;
+        }
+        const data = await fetchData('/api/threads/new', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: 'New Thread' }) 
+        });
+        if (data.success) {
+            state.currentThreadId = data.thread.id;
+            loadThreads(); 
+            clearChatMessagesAndInserters(); 
+            addWelcomeMessage(); 
+            elements.chatMessages.scrollTop = 0; 
+        } else {
+            console.error('Error creating thread:', data.error);
+            alert('Error creating new thread.');
+        }
+    }
+    async function activateThread(threadId) {
+        if (state.currentThreadId === threadId || state.isStreaming) return; 
+        const data = await fetchData(`/api/threads/${threadId}/activate`, {
+            method: 'POST'
+        });
+        if (data.success) {
+            state.currentThreadId = data.thread_id;
+            loadThreads(); 
+            const messagesToRemove = elements.chatMessages.querySelectorAll('.message, .message-inserter:not(#top-message-inserter)');
+            messagesToRemove.forEach(el => el.remove());
+            const welcome = elements.chatMessages.querySelector('.welcome-message');
+            if (welcome) welcome.remove();
+            if (data.history?.length > 0) {
+                data.history.forEach(msg => {
+                    const messageElement = addMessageAndInserterToChat(
+                        msg.content,
+                        msg.role === 'assistant' ? 'bot' : msg.role,
+                        msg.thinking || null,
+                        msg.id
+                    );
+                    processMessageContent(messageElement);
+                });
+            } else {
+                addWelcomeMessage();
+            }
+             elements.chatMessages.scrollTop = 0; 
+        } else {
+            console.error('Error activating thread:', data.error);
+            alert('Error switching thread.');
+        }
+    }
+    function showRenameModal(threadId, currentName) {
+        state.renameThreadId = threadId;
+        elements.threadNameInput.value = currentName;
+        elements.renameThreadModal.style.display = 'flex';
+        elements.threadNameInput.focus();
+        elements.threadNameInput.select();
+    }
+    async function renameThread(threadId, newName) {
+        const data = await fetchData(`/api/threads/${threadId}/rename`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: newName })
+        });
+        if (data.success) {
+            elements.renameThreadModal.style.display = 'none';
+            loadThreads();
+        } else {
+            console.error('Error renaming thread:', data.error);
+        }
+    }
+     async function deleteThread(threadId) {
+         const data = await fetchData(`/api/threads/${threadId}/delete`, {
+             method: 'DELETE'
+         });
+         if (data.success) {
+             loadThreads(); 
+             await activateThread(data.active_thread);
+         } else {
+             console.error('Error deleting thread:', data.error);
+             alert('Error deleting thread.');
+         }
+     }
+    function clearChatMessagesAndInserters() {
+        const messagesToRemove = elements.chatMessages.querySelectorAll('.message, .message-inserter:not(#top-message-inserter)');
+        messagesToRemove.forEach(el => el.remove());
+        const welcome = elements.chatMessages.querySelector('.welcome-message');
+            if (welcome) welcome.remove();
+    }
+    function clearChatMessages() {
+        elements.chatMessages.innerHTML = '';
+    }
+});
