@@ -1,0 +1,13 @@
+│── /static
+│   │── /css
+│   │   ├── style.css
+│   │── /js
+│   │   ├── script.js
+│── /templates
+│   ├── index.html
+│── /data/conversations.json
+│── /data/threads.json
+│── /uploads
+│── app.py
+│── requirements.txt
+│── README.md
